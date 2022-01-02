@@ -25,10 +25,10 @@ Access L2 voter data by purchasing a subscription at https://l2-data.com/voter-d
 ### R Packages
 The following R packages are required:
 
-- `[Tidyverse]`(https://www.tidyverse.org/packages/)
-- `[fastDummies]`(https://cran.r-project.org/web/packages/fastDummies/fastDummies.pdf)
-- `[fuzzyjoin]`(https://cran.r-project.org/web/packages/fuzzyjoin/index.html)
-- `[Here]`(https://here.r-lib.org/) (or you can modify the file paths so they don't require "here")
+- [`Tidyverse`](https://www.tidyverse.org/packages/)
+- [`fastDummies`](https://cran.r-project.org/web/packages/fastDummies/fastDummies.pdf)
+- [`fuzzyjoin`](https://cran.r-project.org/web/packages/fuzzyjoin/index.html)
+- [`Here`](https://here.r-lib.org/) (or you can modify the file paths so they don't require "here")
 
 
 ### Bespoke R functions
