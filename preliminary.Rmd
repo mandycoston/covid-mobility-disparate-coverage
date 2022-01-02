@@ -1,0 +1,449 @@
+---
+title: "Preliminary analysis"
+output: html_notebook
+---
+
+This file performs the preliminary analysis in the main paper including those in Figures 4-6.
+
+```{r}
+library(tidyverse, warn.conflicts = FALSE)
+library(stargazer)
+library(xtable)
+library(here)
+source(here("read_specs.R"))
+source(here("utils.R"))
+img_width <- 10
+img_height <- 10
+cbPalette <-  c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+theme_set(theme_bw(base_size = 20))
+```
+
+> Specify the location of input & output data
+
+```{r}
+# input
+nc_processed_path <- here("processed", "nc_18.csv")
+nc_categories_path <- here("processed", "nc_18_categories.csv")
+nc_monthly_path <- here("processed", "nc_18_monthly.csv")
+nc_october_path <- here("processed", "nc_october_18.csv")
+election_day_predictions_path <- here("processed", "election_day_predictions.Rds")
+oct_nov_predictions_path <- here("processed", "predictions.Rds")
+
+# output
+img_path <- here("img", "nc" ,"final") 
+df_path <- here("processed", "df.Rds")
+df_monthly_path <- here("processed", "df_monthly.Rds")
+```
+
+> Read in processed data and set parameters of the analysis
+
+```{r}
+election_date <- lubridate::ymd("2018-11-06")
+df <- read_csv(nc_processed_path, col_types = election_spec) %>% 
+  mutate(perc_nw = 1 - white_perc)
+df_cats <- read_csv(nc_categories_path, col_types = category_spec)
+df_names <- read_csv(nc_categories_path, 
+                     col_types = cols_only(safegraph_place_id = col_factor(), 
+                                           location_name = col_character(), 
+                                           city = col_character()))
+monthly <- read_csv(nc_monthly_path, col_types = monthly_spec)
+october <- read_csv(nc_october_path, col_types = monthly_spec) 
+october %>%
+   bind_rows(monthly) -> monthly
+
+# Flags to set parameters of the analysis
+FILTER_WEEKENDS_FROM_PLACEBO <- TRUE # filters out weekends from the placebo analysis
+TUESDAYS_ONLY <- FALSE # uses only Tuesdays in the placebo analysis
+WORSHIP_ONLY <- FALSE # filters to places of worship only
+REMOVE_SCHOOLS <- TRUE # filters out elementary and secondary schools
+FILTER_LOW_AGGREGATE_SG <- FALSE # if true, filters out locations whose max daily visits over a month <= monthly_max_cutoff 
+monthly_max_cutoff <- 4
+FILTER_OUTLIER_RATES <- FALSE
+min_rate <- 0.01
+max_rate <- 0.1
+
+# These flags specify which of several methods should be used to estimate non-election voters
+USE_ADJACENT_DAYS_AS_BASE <- TRUE # uses day before and day after election to estimate non-election voters
+USE_ADJACENT_2DAYS_AS_BASE <- FALSE # uses day before and day after election to estimate non-election voters
+USE_ADJACENT_AND_SUBSEQ_DAYS_AS_BASE <- FALSE # uses day before and day after AND ONE WEEK AFTER election to estimate non-election voters
+USE_SUBSEQUENT_TUESDAYS_AS_BASE <- FALSE # uses subsequent two weeks after election to estimate non-election voters.
+USE_TUESDAY_IMPUTATION_AS_BASE <- FALSE # use linear regression model to estimate non-election voters
+
+placebo_day_offset <- 1 # specifies the number of days to add to election_date for a placebo test (see monthly_reference for placebos across the whole month)
+```
+
+```{r}
+## remove weekends if flag set
+if (FILTER_WEEKENDS_FROM_PLACEBO) {
+  monthly %>%
+    mutate(wday = lubridate::wday(date, label = TRUE)) %>%
+    filter(wday != "Sun",
+           wday != "Sat") -> monthly
+}
+
+if (TUESDAYS_ONLY) {
+  monthly %>%
+    filter(wday == "Tue") -> monthly
+}
+
+## append category and filter to specified categories (if flags set)
+df_cats %>%
+  select(safegraph_place_id, top_category, sub_category) %>%
+  right_join(df,
+    by = c("safegraph_place_id")
+  ) -> df
+
+if (WORSHIP_ONLY) {
+  df %>%
+    filter(top_category == "Religious Organizations") -> df
+} else if(REMOVE_SCHOOLS) {
+  df %>% 
+    filter(top_category != "Elementary and Secondary Schools") -> df
+}
+
+## combine election df and monthly df
+df %>%
+  rename(sg_count_election = sg_count) %>%
+  select(safegraph_place_id, voters, sg_count_election, top_category, sub_category) %>%
+  right_join(monthly,
+    by = c("safegraph_place_id")
+  ) -> monthly
+
+## Identify locations that have consistently suspiciously low sg counts
+## And filter out if FILTER_LOW_AGGREGATE_SG == TRUE
+monthly %>%
+  group_by(safegraph_place_id) %>%
+  summarise(max_sg = max(sg_count))  %>%
+  filter(max_sg <= monthly_max_cutoff) %>%
+  pull(safegraph_place_id) -> low_sg_count_ids
+if (FILTER_LOW_AGGREGATE_SG) {
+  df %>%
+    filter(!(safegraph_place_id %in% low_sg_count_ids)) -> df
+}
+
+# add in imputed safegraph traffic
+if (USE_TUESDAY_IMPUTATION_AS_BASE) {
+  election_day_predictions <- readRDS(election_day_predictions_path)
+  oct_nov_predictions <- readRDS(oct_nov_predictions_path)
+  monthly <- merge(monthly, oct_nov_predictions, by=c("safegraph_place_id", "date"), all.x = TRUE)
+  monthly <- merge(monthly, election_day_predictions, by=c("safegraph_place_id", "date"), all.x = TRUE)
+  monthly <- monthly %>%
+    mutate(
+      `sg_base_count` = ifelse(is.na(`predictions`), median_predictions, predictions)
+    )
+}
+```
+
+```{r}
+# add in imputed safegraphic traffic
+if (USE_ADJACENT_DAYS_AS_BASE) {
+monthly %>%
+  group_by(safegraph_place_id) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(prev_sg_count = lag(sg_count),
+         next_sg_count = lead(sg_count),
+         sg_base_count = (prev_sg_count + next_sg_count) /2 )  -> monthly
+} else if (USE_SUBSEQUENT_TUESDAYS_AS_BASE) {
+  monthly %>%
+  group_by(safegraph_place_id) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(next_tues_count = lead(sg_count, n = 7),
+         next_2_tues_count = lead(sg_count, n = 14),
+         sg_base_count = (next_tues_count + next_2_tues_count) /2 )  -> monthly
+} else if (USE_ADJACENT_AND_SUBSEQ_DAYS_AS_BASE) {
+  monthly %>%
+  group_by(safegraph_place_id) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(prev_sg_count = lag(sg_count),
+         next_sg_count = lead(sg_count),
+         one_wk_count = lead(sg_count, 7),
+         sg_base_count = (prev_sg_count + next_sg_count + one_wk_count) /3 )  -> monthly
+} else if (USE_ADJACENT_2DAYS_AS_BASE) {
+monthly %>%
+  group_by(safegraph_place_id) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(prev_sg_count = lag(sg_count),
+         next_sg_count = lead(sg_count),
+         sg_base_count = (prev_sg_count + lag(sg_count, 2)  + next_sg_count + lead(sg_count, 2)) /4)  -> monthly
+} 
+
+
+## add in estimate of non-voter traffic on election day
+## according to the flag (or set to zero if no imputation flag set)
+monthly %>%
+  ungroup() %>%
+  filter(date == election_date) %>%
+  select(safegraph_place_id, sg_base_count) %>%
+  right_join(df, 
+             by = c("safegraph_place_id")) %>% 
+  mutate(sg_voter_est = sg_count - sg_base_count,
+         rate = sg_voter_est/voters) -> df
+
+
+## filter out outlier rates (if flag set)
+if (FILTER_OUTLIER_RATES) {
+  df %>%
+    filter(
+      rate <= max_rate,
+      rate >= min_rate
+    ) -> df
+}
+
+## add in placebo values for placebo day
+date_placebo <- election_date + lubridate::days(placebo_day_offset)
+
+monthly %>%
+  ungroup() %>%
+  filter(date == date_placebo) %>%
+  select(safegraph_place_id, sg_count, sg_base_count) %>% 
+  rename(sg_count_placebo = sg_count, 
+         sg_base_count_placebo = sg_base_count) %>% 
+  right_join(df, 
+             by = c("safegraph_place_id")) %>%
+  mutate(rate_placebo = (sg_count_placebo - sg_base_count_placebo)/voters) -> df
+
+
+# remove those with missing predictions from linear model if applicable
+if(USE_TUESDAY_IMPUTATION_AS_BASE) {
+  df %>%
+    filter(!is.na(sg_base_count)) ->df
+  monthly %>% 
+    filter(!is.na(sg_base_count)) -> monthly
+}
+```
+
+# save df for future anlaysis
+```{r}
+df %>% 
+  saveRDS(file = df_path) 
+
+monthly %>%
+  saveRDS(file = df_monthly_path)
+```
+
+# SafeGraph - Voter correlations
+## Compare SafeGraph unadjusted counts to votes
+```{r}
+print(glue::glue("spearman's rho is {cor(df$sg_count, df$voters, method = 'spearman')}"))
+print(glue::glue("p-value: {cor.test(df$sg_count, df$voters, method = 'spearman', exact = F)$p.value}"))
+```
+
+
+## Compare SafeGraph adjusted counts to votes
+```{r}
+print(glue::glue("spearman's rho is {cor(df$sg_voter_est, df$voters, method = 'spearman')}"))
+print(glue::glue("p-value: {cor.test(df$sg_voter_est, df$voters, method = 'spearman', exact = F)$p.value}"))
+```
+
+
+### visualize voting against safegraph estimate of voters
+```{r}
+df %>%
+  ggplot(aes(x = sg_voter_est, y = voters)) + #, color = perc_over_65)) + 
+  geom_point() +
+  xlab("SafeGraph marginal election traffic") + 
+  ylab("Voters") +
+  theme_bw(base_size = 20) 
+ggsave(paste0(img_path, "voters_sg_est.pdf"), height = .5*img_height, width = .6*img_width)
+```
+
+## validity MSE and stats
+# for stat " For instance,amongst polling places that registered 20 marginal devices, roughly250 to 1600 actual voters turned out"
+```{r}
+df %>%
+  mutate(sqerror = (sg_voter_est - voters)^2) %>%
+  summarise(mse = mean(sqerror), 
+            vmse = var(sqerror), 
+            se_mse = sqrt(vmse/n()), 
+            rmse = sqrt(mse),
+            var_rmse = vmse/(2*sqrt(mse))^2,
+            se_rmse = sqrt(var_rmse/n())) %>%
+  select(-vmse, -var_rmse)
+```
+
+```{r}
+df %>%
+  mutate(sg_bin = ntile(sg_count, 40)) %>%
+  group_by(sg_bin) %>%
+  summarise(sg = mean(sg_count),
+            min_voters = min(voters),
+            max_voters = max(voters))
+```
+
+
+### Hyp test coverage rate against perc over age 65
+```{r}
+print(glue::glue("spearman's rho is {cor(df$rate, df$perc_over_65, method = 'spearman')}"))
+print(glue::glue("p-value is {cor.test(df$rate, df$perc_over_65, method = 'spearman', exact = F)$p.value}"))
+#print(glue::glue("p-value for one-sided test is {cor.test(df$rate, df$perc_over_65, method = 'spearman', exact = F, alternative = 'less')$p.value}"))
+```
+
+## scatterplot of age vs coverage
+```{r}
+df %>%
+  #filter(age_quant < 80, age_quant > 50) %>%
+  mutate(age_bin = ntile(perc_over_65, 30),
+         num_over_65 = voters * perc_over_65) %>% 
+  group_by(age_bin) %>%
+  summarise(tot_voters = sum(voters),
+            tot_sg = sum(sg_voter_est), 
+            rate = tot_sg/tot_voters,
+            tot_perc_over_65 = sum(num_over_65)/sum(tot_voters)*100
+            )%>%
+  rename(voters = tot_voters) %>%
+  ggplot(mapping = aes(x = tot_perc_over_65, y = rate*100)) + 
+  geom_point(mapping = aes(size = voters/1000), alpha = 1/2)  +
+   geom_smooth(data = filter(df, perc_over_65 < .8), mapping = aes(x = perc_over_65*100, y = rate*100), method='loess', formula = y ~ x, span = 1) + 
+  scale_colour_manual(values=cbPalette) +
+  scale_fill_manual(values = cbPalette) + 
+  scale_x_continuous(labels = function(x) paste0(x, '%')) + 
+  scale_y_continuous(labels = function(x) paste0(x, '%'), breaks = c(0, 1, 2, 3)) + 
+  ylab("Coverage") +
+   xlab("Percentage over age 65") +
+   labs(size = "# Voters (1K)") +
+ # scale_x_continuous(breaks = c(0, 0.25, 0.5, 0.75), limits = c(0, 0.75)) + 
+  theme_bw(base_size = 20) +
+  theme(legend.position = "bottom") +
+  annotate("text", x = 16.9, y = 3.5, size = 5, label = paste0("Rank correlation ", signif(cor(df$rate, df$perc_over_65, method = 'spearman'),2), " (p-value < 0.01)")) + 
+ggsave(paste0(img_path,"coverage_vs_age.pdf"), width = img_width, height = img_height, units = "in")
+```
+
+
+
+# RACE 
+
+## marginal correlation
+```{r}
+print(glue::glue("spearman's rho is {cor(df$rate, df$perc_nw, method = 'spearman')}"))
+print(glue::glue("p-value: {cor.test(df$rate, df$perc_nw, method = 'spearman', exact = F)$p.value}"))
+```
+
+## scatterplot of race vs coverage
+```{r}
+df %>%
+mutate(race_bin = ntile(perc_nw, 30),
+         num_nw = voters * perc_nw) %>% 
+  group_by(race_bin) %>%
+  summarise(tot_voters = sum(voters),
+            tot_sg = sum(sg_voter_est), 
+            rate = tot_sg/tot_voters,
+             tot_perc_nw = sum(num_nw)/sum(tot_voters)
+            )%>%
+  rename(voters = tot_voters) %>%
+    ggplot(mapping = aes(x = tot_perc_nw*100, y = rate*100)) + 
+  geom_point(mapping = aes(size = voters/1000), alpha = 1/2)  +
+   geom_smooth(data = df, mapping = aes(y = rate*100, x = perc_nw*100), method='loess', formula = y ~ x, span = 1) + 
+  xlab("Percentage non-white") +
+   ylab("Coverage") + 
+    labs(size = "# Voters (1K)") +
+    scale_x_continuous(labels = function(x) paste0(x, '%')) + 
+  scale_y_continuous(labels = function(x) paste0(x, '%')) + 
+  theme_bw(base_size = 20) +
+  theme(legend.position = "bottom") + 
+    annotate("text", x = 25.9, y = 3.5, size = 5, label = paste0("Rank correlation ", signif(cor(df$rate, df$perc_nw, method = 'spearman'),2), " (p-value < 0.05)")) + 
+ggsave(paste0(img_path,"coverage_race.pdf"), width = img_width, height = img_height, units = "in")
+```
+
+
+
+## scatterplot of race vs coverage
+```{r}
+df %>%
+mutate(race_bin = ntile(perc_nw, 20),
+       elder = ntile(perc_over_65, 10),
+         num_nw = voters * perc_nw) %>% 
+  mutate(poll_age = if_else(elder > 5, "elder", "young")) -> df_bin
+
+df_bin %>%
+  group_by(race_bin, poll_age) %>%
+  summarise(tot_voters = sum(voters),
+            tot_sg = sum(sg_voter_est), 
+            rate = tot_sg/tot_voters,
+             tot_perc_nw = sum(num_nw)/sum(tot_voters)
+            )%>% 
+  rename(voters = tot_voters,
+         perc_nw = tot_perc_nw) %>%
+    ggplot(mapping = aes(x = perc_nw*100, y = rate*100)) + 
+  geom_point(mapping = aes(size = voters/1000, color =  poll_age), alpha = 1/2)  +
+  geom_smooth(data = df_bin, mapping = aes(y = rate*100, x= perc_nw*100, color =  poll_age), method='lm', formula = y~ x, span = 1) + 
+ # geom_smooth(data = df_bin, mapping = aes(y = rate, x= perc_nw), linetype = 2, method='lm', formula = y~ x, span = 1, color = "black", alpha = 0.4) + 
+  xlab("Percentage non-white") +
+   ylab("Coverage") + 
+    labs(size = "# Voters (1K)") +
+   scale_colour_manual(values=cbPalette) +
+  scale_fill_manual(values = cbPalette) + 
+  guides(color = guide_legend(title = "Poll age", title.position = "top", title.hjust = 0.5)) + 
+  guides(size = guide_legend( title.position = "top", title.hjust = 0.5)) + 
+   theme_bw(base_size = 20) + 
+  theme(legend.position = "bottom") +
+      scale_x_continuous(labels = function(x) paste0(x, '%')) + 
+  scale_y_continuous(labels = function(x) paste0(x, '%')) + 
+ggsave(paste0(img_path,"coverage_race_by_age.pdf"), width = img_width, height = img_height, units = "in")
+```
+
+
+
+## scatterplot of age bin vs race 
+```{r}
+df %>%
+  #filter(age_quant < 80, age_quant > 50) %>%
+  mutate(age_bin = ntile(perc_over_65, 20),
+         num_over_65 = voters * perc_over_65,
+         num_nw = voters *perc_nw) %>% 
+  group_by(age_bin) %>%
+  summarise(tot_voters = sum(voters),
+            tot_sg = sum(sg_voter_est), 
+            rate = tot_sg/tot_voters,
+            tot_perc_over_65 = sum(num_over_65)/sum(tot_voters),
+             tot_perc_nw = sum(num_nw)/sum(tot_voters)
+            )%>%
+  rename(voters = tot_voters) %>%
+  ggplot(mapping = aes(x = tot_perc_over_65*100, y = tot_perc_nw*100)) + 
+  geom_point(mapping = aes(size = voters/1000), alpha = 1/2)  +
+   geom_smooth(data = filter(df, perc_over_65 < 0.8), mapping = aes(x = perc_over_65*100, y = perc_nw*100), method='loess', formula = y ~ x, span = 1) + 
+  ylab("Percentage non-white") +
+   xlab("Percentage over age 65") + 
+      scale_x_continuous(labels = function(x) paste0(x, '%')) + 
+  scale_y_continuous(labels = function(x) paste0(x, '%')) + 
+  labs(size = "# Voters (1K)") +
+   # theme_bw(base_size = 20)  + 
+  theme(legend.position = "bottom") +
+ggsave(paste0(img_path,"age_race.pdf"), width = img_width, height = img_height, units = "in")
+```
+
+## heatmap
+
+```{r}
+
+if(USE_TUESDAY_IMPUTATION_AS_BASE) {
+  df %>%
+    filter(!is.na(sg_base_count)) ->df
+}
+df %>%
+  mutate(age_bin = ntile(perc_over_65, 4),
+         nw_bin = ntile(perc_nw, 4),
+         num_nw = perc_nw*voters,
+         num_over_65 = perc_over_65*voters) %>%
+  group_by(age_bin, nw_bin) %>%
+  summarize(tot_voters = sum(voters),
+            tot_sg = sum(sg_voter_est),
+            tot_nw = sum(num_nw),
+            tot_over_65 = sum(num_over_65),
+            count = n(), 
+            perc_over_65 = tot_over_65/tot_voters,
+            perc_nw = tot_nw/tot_voters,
+            coverage = tot_sg/tot_voters) %>%
+  #select(age_bin, nw_bin, rate, perc_over_65, perc_nw, tot_voters, count, everything()) %>%
+arrange(age_bin, nw_bin) %>%
+  ggplot(aes(x= age_bin, y= nw_bin, fill = coverage*100))+ 
+  geom_tile() +
+  xlab("Age quartile (4 = oldest)") + 
+  ylab("Race quartile (4 = largest percent non-white)") + 
+  labs(fill = "% Coverage") +
+  geom_text(aes(label = round(coverage*100, 1)), size = 8) +
+ scale_fill_distiller(palette = "RdYlBu", direction = 1,  guide = guide_legend(legend.key.width = 2)) +
+  theme_bw(base_size = 20)+
+  theme(legend.position = "bottom") +
+ggsave(paste0(img_path,"heat_map.pdf"), width = img_width, height = img_height, units = "in")
+```
+

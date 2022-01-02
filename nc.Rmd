@@ -1,0 +1,113 @@
+---
+title: "NC 2018 General Election"
+---
+
+This notebook pulls and processes the data for the 2018 general election in North Carolina.
+
+> Specify location of code dependencies 
+
+```{r}
+library(tidyverse)
+library(fastDummies)
+library(fuzzyjoin)
+library(here)
+source(here("read_specs.R"))
+source(here("process_patterns.R"))
+source(here("utils.R"))
+```
+
+> Specify the location of input data
+
+```{r data_input_paths}
+l2_dem_path <- here("l2", "VM2--NC--2020-05-18-DEMOGRAPHIC.tab")
+l2_vote_path <- here("l2", "VM2--NC--2020-05-18-VOTEHISTORY.tab")
+sg_poll_map_path_18 <- here("poll_location_data", "north_carolina_2018", "polling_place_20181106_filtered.csv")
+places_dir <- here("safegraph_data", "CoreRecords-CORE_POI-2019_03-2020-03-25/")
+patterns_dir <- here("safegraph_data", "2018","november/")
+```
+
+> Specify the desired location of output data
+
+```{r data_output_paths}
+nc_output <- here("processed", "nc_18.csv")
+nc_categories <- here("processed", "/nc_18_categories.csv")
+nc_monthly <- here("processed", "nc_18_monthly.csv")
+```
+
+
+> 2018 Midterms
+
+```{r}
+# get the safegraph-polling location mapping
+sg_map_list <- import_sg_poll_map(sg_poll_map_path_18)
+election_date <- sg_map_list$election_date
+state <- sg_map_list$state
+sg18 <- sg_map_list$df
+
+
+# fix naming differences between L2 and SafeGraph
+sg18 %>%
+  mutate(Precinct = recode(Precinct,
+    "WASHINGTON WARD 1" = "WASHINGTON 1",
+    "WASHINGTON WARD 2" = "WASHINGTON 2",
+    "WASHINGTON WARD 4" = "WASHINGTON 4",
+    "LOWER CREEK #31" = "LOWER CREEK 31"
+  )) -> sg18
+
+# get the L2 data
+votes2018_f <- get_l2(l2_vote_path, l2_dem_path, state_voter_specs[[state]], dem_spec_predictors,
+  election = General_2018_11_06,
+  check_ballot = TRUE,
+  ballot = BallotType_General_2018_11_06,
+  check_early = TRUE,
+  early = EarlyBallot_General_2018_11_06
+)
+predictors <- votes2018_f$predictors
+votes2018 <- votes2018_f$df
+
+# get a list of unique precincts in each county
+precinct_matched <- get_unique_precincts(votes = votes2018, sg = sg18)
+
+
+# get  traffic
+daily <- get_election(
+  precincts = precinct_matched,
+  patterns = patterns_dir,
+  election = election_date,
+  state = state,
+  INCLUDE_WEEKLY_TRAFFIC = TRUE,
+  USE_MONTHLY = TRUE,
+  SAVE_STATE_PATTERNS = TRUE,
+  USE_SAVED_STATE_PATTERNS = FALSE,
+  #patterns_file_save = "safegraph_data/nc_november_18/nc_november_18_updated.csv"
+)
+
+
+monthly <- aggregate_sg_traffic(df = daily)
+monthly %>%
+  write_csv(path = nc_monthly)
+
+daily %>%
+  filter(date == election_date) -> daily_election
+
+# merge back to the voting data
+original_voter_count <- nrow(votes2018)
+votes2018 %>%
+  inner_join(daily_election, by = c("Precinct", "County")) -> votes_merged_2018
+print(glue::glue("matched {nrow(votes_merged_2018)/original_voter_count}"))
+
+df_true <- aggregate_voters_and_create_outcomes(votes = votes_merged_2018)
+
+df_true %>%
+  write_csv(path = nc_output)
+
+df_true %>%
+  pull(safegraph_place_id) -> place_ids
+get_categories(
+  places_dir = places_dir,
+  place_ids = place_ids,
+  state = state
+) %>%
+  write_csv(path = nc_categories)
+```
+

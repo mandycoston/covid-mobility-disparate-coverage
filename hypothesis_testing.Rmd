@@ -1,0 +1,259 @@
+---
+title: "Plot the placebo data against the election data"
+output: html_notebook
+---
+
+This notebook runs the main empirical results presented in Figures 7-8. It also performs the visualization in Figure 3 that shows the boost in traffic on election day. 
+
+```{r}
+library(plotly)
+library(latex2exp)
+library(here)
+library(tidyverse, warn.conflicts = FALSE)
+img_path <- here("img", "nc", "final") 
+img_height <- 8
+img_width <- 8
+theme_set(theme_bw(base_size = 20) + theme(legend.position = "bottom"))
+```
+
+> Get input data & specify location of output
+
+```{r}
+# input
+df <- readRDS(here("processed", "df.Rds"))
+monthly <- readRDS(here("processed", "df_monthly.Rds"))
+
+# output
+img_path <- here("img", "nc" ,"final") 
+
+# set parameters
+election_date <- lubridate::ymd("2018-11-06")
+```
+
+
+Note that we have 44 non-election day weekdays in October and November. As we have only pulled data from October and November, we must drop Oct 1 and Nov 30 since we don't observe adjacent, yielding 42 non-election weekdays. We also drop days adjacent to election day, yielding 40 non-election weekdays.
+
+```{r}
+cor_rates <- c()
+cor_rates_nw <- c()
+cor_counts <- c()
+for (date_compare in seq(min(monthly$date), max(monthly$date), by = "1 day")) {
+  monthly %>%
+    filter(date == date_compare) %>%
+    #select(safegraph_place_id, date, sg_count, sg_base_count) %>%
+    rename(sg_count_ref = sg_count) %>%
+    right_join(select(df, 
+                      safegraph_place_id, 
+                      perc_over_65,
+                      perc_nw),
+      by = c("safegraph_place_id")
+    )  %>%
+    mutate(rate_ref = (sg_count_ref - sg_base_count)/ voters,
+           count_ref = (sg_count_ref - sg_base_count)) %>%
+    filter(!is.na(rate_ref)) -> df_mod
+  cor_rates <- c(cor_rates, cor(df_mod$rate_ref, df_mod$perc_over_65, method = "spearman"))
+  cor_rates_nw <- c(cor_rates_nw, cor(df_mod$rate_ref, df_mod$perc_nw, method = "spearman"))
+    cor_counts <- c(cor_counts, cor(df_mod$count_ref, df_mod$voters, method = "spearman"))
+}
+```
+
+# Placebo correlation with rates
+## correlation of rate and age
+```{r}
+tibble(correlations = cor_rates, date = seq(min(monthly$date), max(monthly$date), by = "1 day")) %>%
+  mutate(election = if_else(date == election_date, "Election", "Regular")) %>%
+  filter(!is.na(correlations)) %>%
+  filter(date != election_date + lubridate::days(1),
+         date != election_date - lubridate::days(1)) -> marg_cor_age
+
+election_marg_cor_age <- marg_cor_age %>% filter(date == election_date) %>% pull(correlations)
+```
+
+
+## correlation of rate with race
+```{r}
+tibble(correlations = cor_rates_nw, date = seq(min(monthly$date), max(monthly$date), by = "1 day")) %>%
+  mutate(election = if_else(date == election_date, "Election", "Regular")) %>%
+  filter(!is.na(correlations)) %>%
+  filter(date != election_date + lubridate::days(1),
+         date != election_date - lubridate::days(1)) -> marg_cor_race
+
+election_marg_cor_race <- marg_cor_race %>% filter(date == election_date) %>% pull(correlations)
+
+```
+
+# compute p-values
+```{r}
+marg_pval_age <- nrow(filter(marg_cor_age, 
+                             #date!= election_date, 
+                             correlations <= election_marg_cor_age))/nrow(marg_cor_age)#nrow(filter(marg_cor_age, date!= election_date))
+
+print(glue::glue("Empirical p-value for age marginal is {marg_pval_age}"))
+
+marg_pval_race <- nrow(filter(marg_cor_race, 
+                              #date!= election_date, 
+                              correlations <= election_marg_cor_race))/nrow(marg_cor_race)#nrow(filter(marg_cor_race, date!= election_date))
+
+print(glue::glue("Empirical p-value for race marginal is {marg_pval_race}"))
+```
+
+# combining the marginal correlations into one plot
+```{r}
+marg_cor_age %>% 
+  mutate(Dem = "age") %>% 
+  bind_rows(mutate(marg_cor_race, Dem = "race")) %>%
+  ggplot(aes(x= correlations, fill = election)) +
+  geom_histogram(binwidth = 0.03, color = "white") +
+  theme(legend.title = element_blank()) + 
+  scale_fill_viridis_d() + 
+  scale_color_viridis_d() + 
+  facet_grid(Dem~.) + 
+  xlab(TeX("Rank correlation $\\rho(r(D), r(C(S -Z, V)))$")) + 
+    annotate("text", x = -0.13, y = 7.9, size = 5, label = "p-value < 0.05") +   
+  ggsave(paste0(img_path, "placebo_cor_combined.pdf"), height = img_height*.8, width = img_width, dpi = 1000)
+
+```
+
+# plot only age (shown in FAcct talk)
+```{r}
+marg_cor_age %>% 
+  mutate(Dem = "age") %>% 
+  ggplot(aes(x= correlations, fill = election)) +
+  geom_histogram(binwidth = 0.03, color = "white") +
+  theme(legend.title = element_blank()) + 
+  scale_fill_viridis_d() + 
+  scale_color_viridis_d() + 
+  scale_y_continuous(breaks = seq(0,10,2), minor_breaks = seq(0,10,1))  + 
+  xlab(TeX("Rank correlation $\\rho")) + 
+    annotate("text", x = -0.13, y = 9.9, size = 5, label = "p-value < 0.05") +   
+  ggsave(paste0(img_path, "placebo_cor_age.pdf"), height = img_height*.8, width = img_width, dpi = 1000)
+
+```
+
+# placebo correlation on voter count vs sg count
+```{r}
+tibble(correlations = cor_counts, date = seq(min(monthly$date), max(monthly$date), by = "1 day")) %>%
+  filter(!is.na(correlations)) %>%
+  mutate(election = if_else(date == election_date, "Election", "Regular")) %>%
+  filter(date != election_date + lubridate::days(1),
+         date != election_date - lubridate::days(1)) -> corcounts_df # filter out days whose correction was based on voting 
+```
+
+```{r}
+corcounts_df %>%
+  ggplot(aes(x= correlations, fill = election)) +
+  geom_histogram(binwidth = 0.05, color = "white") +
+  theme(legend.title = element_blank()) + 
+  scale_fill_viridis_d() + 
+  scale_color_viridis_d() + 
+  xlab(TeX("Rank correlation $\\rho(r(V), r(S -Z))$")) + 
+  annotate("text", x = 0.4, y = 5, label = "p-value < 0.05")
+  ggsave(paste0(img_path, "placebo_cor_count.pdf"), height = img_height*.8, width = img_width, dpi = 1000)
+
+```
+
+
+
+
+# placebo linear regression 
+
+```{r}
+coef_race <- c()
+coef_age <- c()
+for (date_compare in seq(min(monthly$date) + lubridate::days(1), max(monthly$date) - lubridate::days(1), by = "1 day")) {
+  monthly %>%
+    filter(date == date_compare) %>%
+    rename(sg_count_ref = sg_count) %>%
+    right_join(select(df, 
+                      safegraph_place_id, 
+                      perc_over_65,
+                      perc_nw),
+      by = c("safegraph_place_id")
+    )  %>%
+    mutate(rate_ref = (sg_count_ref - sg_base_count)/ voters,
+           count_ref = (sg_count_ref - sg_base_count)) %>%
+    filter(!is.na(rate_ref)) %>%
+    filter(!is.na(perc_nw)) -> df_mod
+  if (nrow(df_mod) > 0) {
+  mod <- lm(rate_ref ~ perc_nw + perc_over_65, data = df_mod)
+  coef_race <- c(coef_race, coef(mod)['perc_nw'])
+  coef_age <- c(coef_age, coef(mod)['perc_over_65'])
+  } else{
+    coef_race <- c(coef_race, NA)
+  coef_age <- c(coef_age, NA)
+  }
+}
+```
+
+```{r}
+tibble(coef_race = coef_race, coef_age = coef_age,
+       date = seq(min(monthly$date) + lubridate::days(1), 
+                  max(monthly$date) - lubridate::days(1), 
+                  by = "1 day")) %>%
+  filter(date != election_date + lubridate::days(1),
+         date != election_date - lubridate::days(1)) %>%
+  filter(!is.na(coef_age)) %>%
+  mutate(election = if_else(date == election_date, "Election", "Regular")) -> coef_df
+
+election_coef_race <- coef_df %>% filter(date == election_date) %>% pull(coef_race)
+election_coef_age <- coef_df %>% filter(date == election_date) %>% pull(coef_age)
+
+pval_race <- nrow(filter(coef_df, 
+                         coef_race <= election_coef_race))/nrow(coef_df)
+pval_age <- nrow(filter(coef_df,  
+                        coef_age <= election_coef_age))/nrow(coef_df)
+
+coef_df %>% 
+  pivot_longer(cols = coef_race:coef_age, names_prefix = "coef_", names_to = "Demographic", values_to = "Coefficient") -> coef_df
+
+print(glue::glue("Empirical p-value for race is {pval_race}"))
+
+print(glue::glue("Empirical p-value for age is {pval_age}"))
+```
+
+
+# note you will get a warning for the NA values for weekends--this is expected and by design
+```{r}
+coef_df %>%
+  ggplot(aes(x= Coefficient, fill = election)) +
+  geom_histogram(binwidth = 0.005, color = "white") +
+  theme(legend.title = element_blank()) + 
+  scale_fill_viridis_d() + 
+  scale_color_viridis_d() + 
+  facet_grid(Demographic ~.) + 
+  xlab(TeX("Coefficient of linear regression of coverage on age and race")) + 
+  annotate("text", x = -0.032, y = 23, size= 5, label = "p-value < 0.05")
+  ggsave(paste0(img_path, "placebo_coef.pdf"), height = img_height, width = img_width, dpi = 1000)
+
+```
+
+
+# Traffic over the month
+
+```{r}
+monthly %>%
+  group_by(date) %>%
+  summarise(sg_counts = sum(sg_count)) %>%
+  mutate(x = "All") -> m1
+  
+
+monthly %>%
+  mutate(sg_count = sg_count - sg_base_count) %>%
+  group_by(date) %>%
+  summarise(sg_counts = sum(sg_count)) %>%
+  mutate(x = "Marginal") -> m2
+  
+m1 %>%
+  bind_rows(m2) %>%
+  ggplot(aes(x = date, y = sg_counts, color = factor(lubridate::wday(date, label = TRUE, abbr = FALSE)))) +
+  geom_point(size = 4.5) + 
+  ylab("SafeGraph traffic") + 
+  xlab("Date") + 
+  facet_grid(x~.) + 
+  #scale_x_discrete(breaks = c(lubridate::ymd("2018-10-01"), lubridate::ymd("2018-11-06"), lubridate::ymd("2018-12-01"))) + 
+  theme(legend.title = element_blank()) + 
+  geom_vline(xintercept = lubridate::ymd("2018-11-06"), linetype = 2, alpha = 0.35) +
+  ggsave(paste0(img_path, "monthly_traffic.pdf"), height = img_height, width = img_width)
+```
+
+

@@ -1,0 +1,80 @@
+---
+title: "Policy implications"
+output: html_notebook
+---
+
+This file performs policy analysis provided in Table 2-3.
+
+```{r}
+library(tidyverse, warn.conflicts = FALSE)
+library(stargazer)
+library(xtable)
+library(here)
+source(here("utils.R"))
+source(here("read_specs.R"))
+img_width <- 10
+img_height <- 10
+cbPalette <-  c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+theme_set(theme_bw(base_size = 20))
+```
+
+> Read input & specify location of output data
+
+```{r}
+# input
+df <- readRDS(here("processed", "df.Rds"))
+
+# output
+img_path <- here("img", "nc" ,"final") 
+```
+
+
+
+# disparate impact policy implications
+## rank regression of voters on safegraph and age and RACE
+```{r}
+df %>%
+   mutate(rank_sg = min_rank(-sg_voter_est), 
+         rank_voter = min_rank(-voters),
+         percent_65 = 100*perc_over_65,
+         percent_non_white = 100*perc_nw) -> df
+
+cor(df$rank_sg, df$rank_voter)
+
+rank_reg2 <- lm(rank_voter ~ rank_sg + percent_65 + percent_non_white, data = select(df, rank_voter, rank_sg, percent_65, percent_non_white))
+print(summary(rank_reg2))
+stargazer(rank_reg2)
+```
+
+## table of allocation policies
+
+```{r age-race quantile allocation}
+norm_alloc <- sum(df$sg_voter_est)/sum(df$voters)
+num_bins <- 4
+bin_scale <- nrow(df)/num_bins
+df %>%
+  mutate(alloc_SafeGraph = bin_scale*sg_voter_est/sum(df$sg_voter_est),
+         alloc_Voters = bin_scale*voters/sum(df$voters),
+         age_bin = ntile(perc_over_65, num_bins/2),
+         nw_bin = ntile(perc_nw, num_bins/2),
+         age_nw_bin = dplyr::case_when((age_bin == 1) & (nw_bin == 1) ~ 1, 
+                                       age_bin == 1 & nw_bin ==2 ~ 2, 
+                                       age_bin == 2 & nw_bin == 1 ~ 3, TRUE ~4)) %>% 
+ group_by(age_nw_bin) %>%
+  summarise(total_alloc_sg = mean(alloc_SafeGraph),
+            total_alloc_voters = mean(alloc_Voters),
+            var_sg = var(alloc_SafeGraph),
+            se_sg = sqrt(var_sg/n()),
+            sg_low = total_alloc_sg - 1.96*se_sg,
+            sg_high = total_alloc_sg + 1.96*se_sg,
+            var_v = var(alloc_Voters),
+            se_v = sqrt(var_v/n()),
+            perc_change = (total_alloc_sg - total_alloc_voters)/total_alloc_voters,
+            v_low = total_alloc_voters - 1.96*se_v,
+            v_high = total_alloc_voters + 1.96*se_v,
+            t_stat = (total_alloc_voters - total_alloc_sg)/sqrt(se_v^2 + se_sg^2)) %>%
+  select(total_alloc_sg, se_sg,
+         total_alloc_voters, se_v, perc_change) %>%
+  xtable(caption = "Allocation of resources for age tertiles by SafeGraph voter estimates versus by true voter counts. SafeGraph over-allocates to the youngest tertile and under-allocates to the oldest tertile", label = "table_allocation")
+```
+

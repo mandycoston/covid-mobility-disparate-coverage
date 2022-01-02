@@ -1,0 +1,109 @@
+---
+title: "Appendix"
+output: html_notebook
+---
+
+This file performs the analysis contained in the appendix. It assumes that _preliminary.Rmd_ has been run since this stores the dataframe needed for this analysis.
+
+```{r}
+library(tidyverse, warn.conflicts = FALSE)
+library(stargazer)
+# library(xtable)
+# library(boot) # for bootstrapping the linear regression 
+# library(sandwich) # for robust standard errors
+library(here)
+source(here("read_specs.R"))
+source(here("utils.R"))
+img_width <- 10
+img_height <- 10
+cbPalette <-  c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+theme_set(theme_bw(base_size = 20))
+```
+
+> Read input & specify location of output data
+
+```{r}
+# input
+df <- readRDS(here("processed", "df.Rds"))
+
+# output
+img_path <- here("img", "nc" ,"final") 
+```
+
+
+## voter heatmap
+```{r}
+df %>%
+  mutate(age_bin = ntile(perc_over_65, 4),
+         nw_bin = ntile(perc_nw, 4),
+         num_nw = perc_nw*voters,
+         num_over_65 = perc_over_65*voters) %>%
+  group_by(age_bin, nw_bin) %>%
+  summarize(tot_voters = sum(voters),
+            tot_sg = sum(sg_voter_est),
+            tot_nw = sum(num_nw),
+            tot_over_65 = sum(num_over_65),
+            count = n(), 
+            perc_over_65 = tot_over_65/tot_voters,
+            perc_nw = tot_nw/tot_voters,
+            coverage = tot_sg/tot_voters) %>% 
+  rename(voters = tot_voters) %>%
+  #select(age_bin, nw_bin, rate, perc_over_65, perc_nw, tot_voters, count, everything()) %>%
+arrange(age_bin, nw_bin) %>%
+  ggplot(aes(x= age_bin, y= nw_bin, fill = voters/1000))+ 
+  geom_tile() +
+  theme_bw(base_size = 15) + 
+  xlab("Age quartile (4 = oldest)") + 
+  ylab("Race quartile (4 = largest % non-white)") + 
+  geom_text(aes(label = round(voters/1000, 1)), color = "black", size = 5) +
+   scale_fill_distiller(palette = "Blues", direction = 1) +
+  theme(legend.position = "bottom") +
+  labs(fill = "# Voters (1K)") + 
+ggsave(paste0(img_path,"voter_map.pdf"), width = img_width, height = img_height, units = "in")
+```
+
+## count heatmap
+```{r}
+df %>%
+  mutate(age_bin = ntile(perc_over_65, 4),
+         nw_bin = ntile(perc_nw, 4),
+         num_nw = perc_nw*voters,
+         num_over_65 = perc_over_65*voters) %>%
+  group_by(age_bin, nw_bin) %>%
+  summarize(tot_voters = sum(voters),
+            tot_sg = sum(sg_voter_est),
+            tot_nw = sum(num_nw),
+            tot_over_65 = sum(num_over_65),
+            poll_count = n(), 
+            perc_over_65 = tot_over_65/tot_voters,
+            perc_nw = tot_nw/tot_voters,
+            coverage = tot_sg/tot_voters) %>% 
+  #select(age_bin, nw_bin, rate, perc_over_65, perc_nw, tot_voters, count, everything()) %>%
+arrange(age_bin, nw_bin) %>%
+  ggplot(aes(x= age_bin, y= nw_bin, fill = poll_count))+ 
+  geom_tile() +
+  xlab("Age quartile (4 = oldest)") + 
+  ylab("Race quartile (4 = largest % non-white)") + 
+   scale_fill_distiller(palette = "Blues", direction = 1) +
+  geom_text(aes(label = round(poll_count, 1)), color = "black", size = 5) +
+    theme_bw(base_size = 15) + 
+  theme(legend.position = "bottom") +
+  labs(fill = "# Polls") +
+  ggsave(paste0(img_path,"count_map.pdf"), width = img_width, height = img_height, units = "in")
+```
+
+
+## linear regression for election day
+```{r}
+df %>%
+  mutate(rate = rate*100,
+         perc_over_65 = perc_over_65*100,
+         perc_nw = perc_nw*100) -> df_lm 
+mage <- lm(rate ~ perc_over_65, data = df_lm)
+mwage <- lm(rate ~ perc_nw + perc_over_65, data = df_lm)
+m <- lm(rate ~ perc_nw + perc_over_65 + perc_over_65*perc_nw, data = df_lm)
+
+stargazer::stargazer(mage, mwage, m)
+```
+
+

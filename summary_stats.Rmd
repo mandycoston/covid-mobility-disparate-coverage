@@ -1,0 +1,140 @@
+---
+title: "Summary stats"
+---
+
+This notebook computes summary statistics given in Table 1 of the main paper.
+
+```{r}
+library(here)
+library(tidyverse)
+library(fastDummies)
+library(fuzzyjoin)
+library(xtable)
+library(glue)
+source(here("read_specs.R"))
+source(here("process_patterns.R"))
+source(here("utils.R"))
+```
+
+> Specify the location of input & output data
+
+```{r}
+# input data
+l2_dem_path <- here("l2", "VM2--NC--2020-05-18-DEMOGRAPHIC.tab")
+l2_vote_path <- here("l2", "VM2--NC--2020-05-18-VOTEHISTORY.tab")
+sg_poll_map_path_18 <- here("poll_location_data", "north_carolina_2018", "polling_place_20181106_filtered.csv")
+poll_map_path_18 <- here("poll_location_data", "north_carolina_2018", "polling_place_20181106_preprocessed.csv")
+places_dir <- here("safegraph_data", "CoreRecords-CORE_POI-2019_03-2020-03-25/")
+df_path <- here("processed", "df.Rds")
+```
+
+```{r}
+
+# read in processed safegraph data
+df <- readRDS(df_path)
+
+poll <- read_csv(poll_map_path_18)
+poll %>%
+  unite("full_address", zip:street_address) -> poll
+
+length(unique(poll$full_address)) -> n_polls
+
+sg_map_list <- import_sg_poll_map(sg_poll_map_path_18)
+election_date <- sg_map_list$election_date
+state <- sg_map_list$state
+sg18 <- sg_map_list$df
+
+print(glue::glue("Snapshot match rate is {signif(length(unique(sg18$safegraph_place_id))/n_polls ,6)}"))
+
+# fix naming differences between L2 and SafeGraph
+sg18 %>%
+  mutate(Precinct = recode(Precinct,
+    "WASHINGTON WARD 1" = "WASHINGTON 1",
+    "WASHINGTON WARD 2" = "WASHINGTON 2",
+    "WASHINGTON WARD 4" = "WASHINGTON 4",
+    "LOWER CREEK #31" = "LOWER CREEK 31"
+  )) -> sg18
+
+# get the L2 data
+votes <- get_l2(l2_vote_path, l2_dem_path, state_voter_specs[[state]], dem_spec_predictors,
+  election = General_2018_11_06,
+  check_ballot = TRUE,
+  ballot = BallotType_General_2018_11_06,
+  check_early = TRUE,
+  early = EarlyBallot_General_2018_11_06
+)$df
+
+# get a list of unique precincts in each county
+precinct_matched <- get_unique_precincts(votes = votes, sg = sg18)
+
+# compare match rate on poll locations
+print(glue::glue("We matched {length(unique(precinct_matched$safegraph_place_id))} out of {n_polls} for a match rate of {signif(length(unique(precinct_matched$safegraph_place_id))/n_polls, 5)} "))
+
+
+# get  traffic
+daily <- get_election(
+  precincts = precinct_matched,
+  patterns = "safegraph_data/2018/november/",
+  election = election_date,
+  state = state,
+  INCLUDE_WEEKLY_TRAFFIC = TRUE,
+  USE_MONTHLY = TRUE,
+  SAVE_STATE_PATTERNS = TRUE,
+  USE_SAVED_STATE_PATTERNS = FALSE,
+  patterns_file_save = "safegraph_data/nc_november_18/nc_november_18_updated.csv"
+)
+
+
+daily %>%
+  filter(date == election_date) -> daily_election
+
+# merge back to the voting data
+original_voter_count <- nrow(votes)
+votes %>%
+  inner_join(daily_election, by = c("Precinct", "County")) -> votes_merged_2018
+print(glue::glue("matched {nrow(votes_merged_2018)/original_voter_count}"))
+```
+
+
+
+```{r}
+# Produce Table 1 in main paper 
+votes_merged_2018 %>%
+  filter(safegraph_place_id %in% unique(df$safegraph_place_id)) -> votes_merged_2018
+
+votes %>%
+  mutate(over_65 = if_else(Voters_Age >= 65, 1, 0)) -> votes
+votes_merged_2018 %>%
+  mutate(over_65 = if_else(Voters_Age >= 65, 1, 0)) -> votes_merged_2018
+
+n_voters <- length(unique(votes$LALVOTERID))
+n_matched_voters <- sum(df$voters)
+
+age_mean <- mean(votes$Voters_Age, na.rm = TRUE)
+age_sd <- sqrt(var(votes$Voters_Age, na.rm = TRUE))
+
+age_mean_matched <- mean(votes_merged_2018$Voters_Age, na.rm = TRUE)
+age_sd_matched <- sqrt(var(votes_merged_2018$Voters_Age, na.rm = TRUE))
+
+prop_65 <- mean(votes$over_65, na.rm = TRUE)
+prop_hisp <- mean(votes$hispanic, na.rm = TRUE)
+prop_black <- mean(votes$black, na.rm = TRUE)
+prop_white <- mean(votes$white, na.rm = TRUE)
+
+
+prop_hisp_matched <- mean(votes_merged_2018$hispanic)
+prop_black_matched <- mean(votes_merged_2018$black)
+prop_white_matched <- mean(votes_merged_2018$white)
+prop_65_matched <- mean(votes_merged_2018$over_65, na.rm = TRUE)
+
+tibble(
+  group = c("Voters", "Mean Age", " Std Age", "Proportion over 65", "Proportion Hispanic", "Proportion Black", "Proportion White"),
+  Matched = c(n_matched_voters, age_mean_matched, age_sd_matched, prop_65_matched, prop_hisp_matched, prop_black_matched, prop_white_matched),
+  All = c(n_voters, age_mean, age_sd, prop_65, prop_hisp, prop_black, prop_white)
+) -> l2_stats
+
+View(l2_stats)
+
+print(xtable(l2_stats, label = "table:voter_stats", caption = "Demographics of all voters in North Carolina's 2018 election compared to matched voters"), include.rownames = FALSE)
+```
+
