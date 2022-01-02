@@ -49,3 +49,12 @@ This repo includes a few .R files with bespoke variables and functions required 
 7. Perform policy analysis in _policy.Rmd_.
 8. Perform supplementary analysis in appendix in _appendix.Rmd_.
 
+Please cite as 
+@inproceedings{coston2021leveraging,
+  title={Leveraging Administrative Data for Bias Audits: Assessing Disparate Coverage with Mobility Data for COVID-19 Policy},
+  author={Coston, Amanda and Guha, Neel and Ouyang, Derek and Lu, Lisa and Chouldechova, Alexandra and Ho, Daniel E},
+  booktitle={Proceedings of the 2021 ACM Conference on Fairness, Accountability, and Transparency},
+  pages={173--184},
+  year={2021}
+}
+
