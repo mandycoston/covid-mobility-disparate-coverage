@@ -19,15 +19,16 @@ Once you have an account, you can download the following data from the [SafeGrap
 2. SafeGraph Core Places US (Pre-Nov-2020) is required. 
 
 ### L2 data
+Access L2 voter data by purchasing a subscription at https://l2-data.com/voter-data/
 
 ## Code dependencies
 ### R Packages
 The following R packages are required:
 
-- [Tidyverse](https://www.tidyverse.org/packages/)
-- [fastDummies](https://cran.r-project.org/web/packages/fastDummies/fastDummies.pdf)
-- [fuzzyjoin](https://cran.r-project.org/web/packages/fuzzyjoin/index.html)
-- [Here](https://here.r-lib.org/) (or you can modify the file paths so they don't require "here")
+- `[Tidyverse]`(https://www.tidyverse.org/packages/)
+- `[fastDummies]`(https://cran.r-project.org/web/packages/fastDummies/fastDummies.pdf)
+- `[fuzzyjoin]`(https://cran.r-project.org/web/packages/fuzzyjoin/index.html)
+- `[Here]`(https://here.r-lib.org/) (or you can modify the file paths so they don't require "here")
 
 
 ### Bespoke R functions
@@ -50,6 +51,7 @@ This repo includes a few .R files with bespoke variables and functions required 
 8. Perform supplementary analysis in appendix in _appendix.Rmd_.
 
 Please cite as 
+```
 @inproceedings{coston2021leveraging,
   title={Leveraging Administrative Data for Bias Audits: Assessing Disparate Coverage with Mobility Data for COVID-19 Policy},
   author={Coston, Amanda and Guha, Neel and Ouyang, Derek and Lu, Lisa and Chouldechova, Alexandra and Ho, Daniel E},
@@ -57,4 +59,4 @@ Please cite as
   pages={173--184},
   year={2021}
 }
-
+```
